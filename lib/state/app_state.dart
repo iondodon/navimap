@@ -4,15 +4,21 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import '../models/user_location.dart';
+import '../services/location_service.dart';
+
 class AppState extends ChangeNotifier {
-  AppState({http.Client? httpClient})
+  AppState({http.Client? httpClient, LocationService? locationService})
       : _httpClient = httpClient ?? http.Client(),
-        _ownsHttpClient = httpClient == null {
+        _ownsHttpClient = httpClient == null,
+        _locationService = locationService ?? LocationService() {
     _beginConnectivityProbe();
   }
 
   final http.Client _httpClient;
   final bool _ownsHttpClient;
+  final LocationService _locationService;
+  StreamSubscription<UserLocation>? _locationSubscription;
 
   static const LatLng defaultCenter = LatLng(37.7749, -122.4194);
   static const double defaultZoom = 15;
@@ -28,6 +34,15 @@ class AppState extends ChangeNotifier {
   bool _isCheckingConnectivity = false;
   Future<void>? _connectivityFuture;
   int _retryToken = 0;
+  UserLocation? _currentLocation;
+  bool _hasLocationPermission = false;
+  bool _permissionDeniedForever = false;
+  bool _isRequestingPermission = false;
+  bool _isLocationLoading = false;
+  bool _isLocationServiceEnabled = true;
+  String? _locationError;
+  bool _shouldCenterOnUser = false;
+  bool _hasCenteredOnUser = false;
 
   LatLng get center => _center;
   double get zoom => _zoom;
@@ -41,6 +56,14 @@ class AppState extends ChangeNotifier {
   bool get isConnectivityKnown => _hasConnectivity != null;
   bool get isCheckingConnectivity => _isCheckingConnectivity;
   int get retryToken => _retryToken;
+  UserLocation? get currentLocation => _currentLocation;
+  bool get hasLocationPermission => _hasLocationPermission;
+  bool get permissionDeniedForever => _permissionDeniedForever;
+  bool get isRequestingPermission => _isRequestingPermission;
+  bool get isLocationLoading => _isLocationLoading;
+  bool get isLocationServiceEnabled => _isLocationServiceEnabled;
+  String? get locationError => _locationError;
+  bool get shouldCenterOnUser => _shouldCenterOnUser;
 
   Future<void> retryConnectivityCheck() {
     _retryToken++;
@@ -88,6 +111,85 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  Future<void> initializeLocation() async {
+    final status = await _locationService.checkPermission();
+    _applyPermissionStatus(status);
+    await _refreshServiceStatus();
+    if (_hasLocationPermission && _isLocationServiceEnabled) {
+      await _startLocationTracking();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  Future<LocationPermissionStatus> requestLocationAccess() async {
+    if (_isRequestingPermission) {
+      return _hasLocationPermission
+          ? LocationPermissionStatus.granted
+          : _permissionDeniedForever
+              ? LocationPermissionStatus.deniedForever
+              : LocationPermissionStatus.denied;
+    }
+
+    _isRequestingPermission = true;
+    notifyListeners();
+    try {
+      final status = await _locationService.requestPermission();
+      _applyPermissionStatus(status);
+      await _refreshServiceStatus();
+      if (_hasLocationPermission && _isLocationServiceEnabled) {
+        await _startLocationTracking();
+      }
+      if (!_hasLocationPermission) {
+        _locationError = _permissionDeniedForever
+            ? 'Location permission permanently denied. Enable permissions from Settings.'
+            : 'Location permission denied. We cannot display your position.';
+      }
+      return status;
+    } finally {
+      _isRequestingPermission = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> fetchCurrentLocation() async {
+    if (!_hasLocationPermission || !_isLocationServiceEnabled) {
+      return;
+    }
+    _isLocationLoading = true;
+    notifyListeners();
+    try {
+      final location = await _locationService.getCurrentLocation();
+      _handleLocationUpdate(location, shouldCenter: true);
+    } on LocationServiceException catch (error) {
+      _applyLocationError(error);
+    } finally {
+      _isLocationLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void updateLocation(UserLocation location) {
+    _handleLocationUpdate(location);
+  }
+
+  void acknowledgeUserCentered() {
+    if (!_shouldCenterOnUser) {
+      return;
+    }
+    _shouldCenterOnUser = false;
+    _hasCenteredOnUser = true;
+    notifyListeners();
+  }
+
+  void clearLocationError() {
+    if (_locationError == null) {
+      return;
+    }
+    _locationError = null;
+    notifyListeners();
+  }
+
   void setMapReady() {
     if (_mapReady) {
       return;
@@ -121,6 +223,94 @@ class AppState extends ChangeNotifier {
     if (_ownsHttpClient) {
       _httpClient.close();
     }
+    _locationSubscription?.cancel();
     super.dispose();
+  }
+
+  Future<void> _refreshServiceStatus() async {
+    final enabled = await _locationService.isLocationServiceEnabled();
+    _isLocationServiceEnabled = enabled;
+    if (!enabled) {
+      _locationError = 'Location services are disabled. Enable GPS to view your position.';
+    }
+  }
+
+  Future<void> _startLocationTracking() async {
+    if (_locationSubscription != null) {
+      await _locationSubscription!.cancel();
+      _locationSubscription = null;
+    }
+    _isLocationLoading = true;
+    _locationError = null;
+    notifyListeners();
+    try {
+      final initial = await _locationService.getCurrentLocation();
+      _handleLocationUpdate(initial, shouldCenter: true, notify: false);
+    } on LocationServiceException catch (error) {
+      _applyLocationError(error);
+    } finally {
+      _isLocationLoading = false;
+      notifyListeners();
+    }
+
+    _locationSubscription = _locationService.getLocationStream().listen(
+      (location) {
+        _handleLocationUpdate(location);
+        notifyListeners();
+      },
+      onError: (error) {
+        if (error is LocationServiceException) {
+          _applyLocationError(error, notify: true);
+        } else {
+          _locationError = 'Unexpected location error: $error';
+          notifyListeners();
+        }
+      },
+    );
+  }
+
+  void _handleLocationUpdate(UserLocation location, {bool shouldCenter = false, bool notify = true}) {
+    final isFirstUpdate = _currentLocation == null;
+    _currentLocation = location;
+    _locationError = null;
+    _isLocationServiceEnabled = true;
+    if ((shouldCenter || isFirstUpdate) && !_hasCenteredOnUser) {
+      _shouldCenterOnUser = true;
+      _center = location.toLatLng();
+    }
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  void _applyPermissionStatus(LocationPermissionStatus status) {
+    _hasLocationPermission = status == LocationPermissionStatus.granted;
+    _permissionDeniedForever = status == LocationPermissionStatus.deniedForever;
+  }
+
+  void _applyLocationError(LocationServiceException error, {bool notify = false}) {
+    switch (error.code) {
+      case LocationServiceErrorCode.permissionDenied:
+        _hasLocationPermission = false;
+        _locationError = 'Location permission denied. Enable access to see your position.';
+        break;
+      case LocationServiceErrorCode.permissionPermanentlyDenied:
+        _permissionDeniedForever = true;
+        _locationError = 'Location permissions permanently denied. Update settings to continue.';
+        break;
+      case LocationServiceErrorCode.serviceDisabled:
+        _locationError = 'Location services are disabled. Turn on GPS and try again.';
+        _isLocationServiceEnabled = false;
+        break;
+      case LocationServiceErrorCode.timeout:
+        _locationError = 'Fetching your location is taking longer than expected. Please try again.';
+        break;
+      case LocationServiceErrorCode.unknown:
+        _locationError = 'We ran into a problem retrieving your location. Retry in a moment.';
+        break;
+    }
+    if (notify) {
+      notifyListeners();
+    }
   }
 }

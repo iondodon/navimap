@@ -1,23 +1,50 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
+import '../models/user_location.dart';
+import '../services/location_service.dart';
 import '../state/app_state.dart';
 
-class MapScreen extends StatelessWidget {
+class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
+  @override
+  State<MapScreen> createState() => _MapScreenState();
+}
+
+class _MapScreenState extends State<MapScreen> {
   static final LatLngBounds _worldBounds = LatLngBounds(
     const LatLng(-85.0, -180.0),
     const LatLng(85.0, 180.0),
   );
+
+  final MapController _mapController = MapController();
+  bool _initialized = false;
+  bool _hasPromptedPermission = false;
+  bool _isPermissionDialogOpen = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) {
+      return;
+    }
+    _initialized = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<AppState>().initializeLocation();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Consumer<AppState>(
         builder: (context, appState, _) {
+          _handleSideEffects(appState);
+
           final connectivity = appState.connectivityStatus;
           final showMap = connectivity == true;
           final showOffline = connectivity == false;
@@ -43,6 +70,31 @@ class MapScreen extends StatelessWidget {
                     appState.retryConnectivityCheck();
                   },
                 ),
+              if (appState.isLocationLoading)
+                const _InlineStatusBanner(
+                  message: 'Acquiring your location…',
+                  icon: Icons.gps_fixed,
+                ),
+              if (appState.locationError != null)
+                _LocationErrorBanner(
+                  message: appState.locationError!,
+                  onRetry: appState.hasLocationPermission && appState.isLocationServiceEnabled
+                      ? () {
+                          appState.fetchCurrentLocation();
+                        }
+                      : null,
+                  onSettings: appState.permissionDeniedForever || !appState.isLocationServiceEnabled
+                      ? _openSystemSettings
+                      : null,
+                ),
+              if (!appState.hasLocationPermission)
+                _PermissionHintBanner(
+                  permissionDeniedForever: appState.permissionDeniedForever,
+                  onGrant: () {
+                    _showPermissionDialog(appState);
+                  },
+                  onOpenSettings: _openSystemSettings,
+                ),
             ],
           );
         },
@@ -51,8 +103,11 @@ class MapScreen extends StatelessWidget {
   }
 
   Widget _buildMap(BuildContext context, AppState appState) {
+    final locationLayers = _buildLocationLayers(appState);
+
     return FlutterMap(
       key: ValueKey('flutter-map-${appState.retryToken}'),
+      mapController: _mapController,
       options: MapOptions(
         initialCenter: appState.center,
         initialZoom: appState.zoom,
@@ -87,8 +142,52 @@ class MapScreen extends StatelessWidget {
             appState.reportTileError(error);
           },
         ),
+        ...locationLayers,
       ],
     );
+  }
+
+  List<Widget> _buildLocationLayers(AppState appState) {
+    final location = appState.currentLocation;
+    if (location == null) {
+      return const <Widget>[];
+    }
+
+    final accuracy = location.accuracy;
+    final widgets = <Widget>[];
+
+    if (accuracy != null && accuracy > 0) {
+      widgets.add(
+        CircleLayer(
+          circles: [
+            CircleMarker(
+              point: location.toLatLng(),
+              color: Colors.blue.withOpacity(0.18),
+              borderColor: Colors.blue.withOpacity(0.32),
+              borderStrokeWidth: 2,
+              useRadiusInMeter: true,
+              radius: accuracy.clamp(10, 100.0).toDouble(),
+            ),
+          ],
+        ),
+      );
+    }
+
+    widgets.add(
+      MarkerLayer(
+        markers: [
+          Marker(
+            point: location.toLatLng(),
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: const _BlueDotMarker(),
+          ),
+        ],
+      ),
+    );
+
+    return widgets;
   }
 
   Widget _buildStatusPlaceholder(
@@ -133,6 +232,77 @@ class MapScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  void _handleSideEffects(AppState appState) {
+    if (appState.shouldCenterOnUser && appState.isMapReady) {
+      final location = appState.currentLocation;
+      if (location != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _mapController.move(location.toLatLng(), appState.zoom);
+          appState.acknowledgeUserCentered();
+        });
+      }
+    }
+
+    if (_shouldShowPermissionDialog(appState)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showPermissionDialog(appState);
+      });
+    }
+  }
+
+  bool _shouldShowPermissionDialog(AppState appState) {
+    if (appState.hasLocationPermission || appState.permissionDeniedForever || _isPermissionDialogOpen) {
+      return false;
+    }
+    return !_hasPromptedPermission;
+  }
+
+  Future<void> _showPermissionDialog(AppState appState) async {
+    if (_isPermissionDialogOpen || appState.hasLocationPermission) {
+      return;
+    }
+    _isPermissionDialogOpen = true;
+    _hasPromptedPermission = true;
+
+    final result = await showDialog<LocationPermissionStatus?>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Enable Location Access'),
+          content: const Text(
+            'NaviMap needs your location to show routes and keep you oriented on the map. We use GPS only when you have the app open.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(LocationPermissionStatus.denied);
+              },
+              child: const Text('Not Now'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final status = await appState.requestLocationAccess();
+                if (!mounted) {
+                  return;
+                }
+                Navigator.of(context).pop(status);
+              },
+              child: const Text('Allow'),
+            ),
+          ],
+        );
+      },
+    );
+
+    _isPermissionDialogOpen = false;
+  }
+
+  static Future<void> _openSystemSettings() async {
+    await Geolocator.openAppSettings();
+    await Geolocator.openLocationSettings();
   }
 }
 
@@ -185,6 +355,213 @@ class _TileErrorBanner extends StatelessWidget {
                 TextButton(
                   onPressed: onRetry,
                   child: const Text('Retry', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BlueDotMarker extends StatelessWidget {
+  const _BlueDotMarker();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 24,
+        height: 24,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.blue.shade500,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: const [
+            BoxShadow(color: Colors.black26, blurRadius: 6, spreadRadius: 1),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineStatusBanner extends StatelessWidget {
+  const _InlineStatusBanner({required this.message, required this.icon});
+
+  final String message;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Material(
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.black.withOpacity(0.75),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: Colors.white),
+                  const SizedBox(width: 12),
+                  Text(
+                    message,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LocationErrorBanner extends StatelessWidget {
+  const _LocationErrorBanner({
+    required this.message,
+    this.onRetry,
+    this.onSettings,
+  });
+
+  final String message;
+  final VoidCallback? onRetry;
+  final Future<void> Function()? onSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Material(
+          color: Colors.orange.shade700,
+          borderRadius: BorderRadius.circular(12),
+          elevation: 6,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.location_off, color: Colors.white),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        message,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+                if (onRetry != null || onSettings != null) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      if (onRetry != null)
+                        FilledButton(
+                          onPressed: onRetry,
+                          style: FilledButton.styleFrom(backgroundColor: Colors.white),
+                          child: const Text(
+                            'Retry',
+                            style: TextStyle(color: Colors.black87),
+                          ),
+                        ),
+                      if (onRetry != null && onSettings != null)
+                        const SizedBox(width: 12),
+                      if (onSettings != null)
+                        OutlinedButton(
+                              onPressed: () {
+                                onSettings?.call();
+                              },
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Colors.white70),
+                          ),
+                          child: const Text(
+                            'Open Settings',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PermissionHintBanner extends StatelessWidget {
+  const _PermissionHintBanner({
+    required this.permissionDeniedForever,
+    required this.onGrant,
+    required this.onOpenSettings,
+  });
+
+  final bool permissionDeniedForever;
+  final VoidCallback onGrant;
+  final Future<void> Function() onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = permissionDeniedForever
+        ? 'Location permissions are turned off. Enable them from Settings to see your position.'
+        : 'Allow location access so we can show where you are on the map.';
+
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Material(
+          color: Colors.blueGrey.shade900.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(12),
+          elevation: 6,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.my_location, color: Colors.white),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        message,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    if (!permissionDeniedForever)
+                      FilledButton(
+                        onPressed: onGrant,
+                        child: const Text('Enable Location'),
+                      ),
+                    if (permissionDeniedForever)
+                      FilledButton(
+                        onPressed: () {
+                          onOpenSettings();
+                        },
+                        child: const Text('Open Settings'),
+                      ),
+                  ],
                 ),
               ],
             ),
