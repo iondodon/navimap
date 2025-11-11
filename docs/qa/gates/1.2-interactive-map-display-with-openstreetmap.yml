@@ -1,0 +1,68 @@
+schema: 1
+story: "1.2"
+story_title: "Interactive Map Display with OpenStreetMap"
+gate: CONCERNS
+status_reason: "Performance targets lack measurable evidence and widget tests rely on live tiles."
+reviewer: "Quinn (Test Architect)"
+updated: "2025-11-11T19:50:00Z"
+
+risk_summary:
+  highest_score: 6
+  items:
+    - id: R1
+      score: 6
+      notes: "Performance acceptance criteria are unverified."
+    - id: R2
+      score: 4
+      notes: "Widget tests depend on live OpenStreetMap tiles."
+
+top_issues:
+  - id: perf-evidence-missing
+    title: "Performance acceptance criteria lack measured evidence"
+    severity: medium
+    suggested_owner: dev
+    notes: "Capture and attach launch/gesture timings that demonstrate compliance with AC3/AC4."
+  - id: tests-live-tiles
+    title: "Widget tests hit live OpenStreetMap tiles"
+    severity: medium
+    suggested_owner: dev
+    notes: "Introduce a stubbed tile provider or HTTP override so tests remain deterministic and policy compliant."
+
+waiver:
+  active: false
+
+quality_score: 90
+expires: "2025-11-25T19:50:00Z"
+
+evidence:
+  tests_reviewed: 3
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 5, 6, 7]
+    ac_gaps: [3, 4]
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "HTTPS tile access with scoped user agent; no sensitive data handled."
+  performance:
+    status: CONCERNS
+    notes: "No empirical load/interaction timing captured; targets unverified."
+  reliability:
+    status: PASS
+    notes: "Offline placeholder and retry flows validated via widget tests."
+  maintainability:
+    status: PASS
+    notes: "Code structured per architecture guidance; Provider wiring remains clean."
+
+recommendations:
+  immediate:
+    - action: "Capture and publish map load and gesture latency metrics meeting AC3/AC4."
+      refs:
+        - "lib/screens/map_screen.dart"
+        - "docs/stories/1.2.story.md"
+  future:
+    - action: "Stub tile HTTP requests in widget tests to remove external dependency."
+      refs:
+        - "test/widget_test.dart"
+        - "test/screens/map_screen_test.dart"
