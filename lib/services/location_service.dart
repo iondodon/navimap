@@ -16,7 +16,8 @@ class LocationServiceException implements Exception {
   final Object? cause;
 
   @override
-  String toString() => 'LocationServiceException($code, $message${cause != null ? ', cause: $cause' : ''})';
+  String toString() =>
+      'LocationServiceException($code, $message${cause != null ? ', cause: $cause' : ''})';
 }
 
 /// Categorized error types surfaced to the UI layer.
@@ -69,7 +70,8 @@ class LocationService {
     return _mapPermission(requested);
   }
 
-  Future<bool> isLocationServiceEnabled() => _geolocator.isLocationServiceEnabled();
+  Future<bool> isLocationServiceEnabled() =>
+      _geolocator.isLocationServiceEnabled();
 
   Stream<UserLocation> getLocationStream() {
     return _geolocator
@@ -82,8 +84,8 @@ class LocationService {
 
   Future<UserLocation> getCurrentLocation() async {
     try {
-    final position = await _geolocator
-      .getCurrentPosition(locationSettings: _currentLocationSettings)
+      final position = await _geolocator
+          .getCurrentPosition(locationSettings: _currentLocationSettings)
           .timeout(_getLocationTimeout);
       return _mapPosition(position);
     } on TimeoutException catch (error) {
@@ -139,7 +141,7 @@ class LocationService {
       latitude: position.latitude,
       longitude: position.longitude,
       accuracy: position.accuracy == 0 ? null : position.accuracy,
-      timestamp: position.timestamp ?? DateTime.now(),
+      timestamp: position.timestamp,
     );
   }
 

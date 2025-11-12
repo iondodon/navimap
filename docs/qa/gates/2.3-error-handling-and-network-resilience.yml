@@ -1,0 +1,55 @@
+# <!-- Powered by BMAD™ Core -->
+schema: 1
+story: "2.3"
+story_title: "Story 2.3: Error Handling and Network Resilience"
+gate: FAIL
+status_reason: "GraphHopper fallback crashes on mobile because Platform.environment is unsupported, leaving routing resilience unimplemented."
+reviewer: "Quinn (Test Architect)"
+updated: "2025-11-12T00:00:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "ROUTING-ENV-001"
+    severity: high
+    finding: "RoutingService reads GRAPHHOPPER_API_KEY via Platform.environment, which throws on iOS/Android and prevents GraphHopper fallback."
+    suggested_action: "Load the key with const String.fromEnvironment (with injectable override for tests) and verify fallback flows end-to-end."
+    suggested_owner: dev
+
+risk_summary:
+  totals: { critical: 0, high: 1, medium: 0, low: 0 }
+  recommendations:
+    must_fix:
+      - "Fix GraphHopper fallback configuration so routing remains available when OSRM is down."
+    monitor: []
+
+quality_score: 70
+expires: "2025-11-26T00:00:00Z"
+
+evidence:
+  tests_reviewed: 22
+  risks_identified: 1
+  trace:
+    ac_covered: [1, 3, 4, 6, 7]
+    ac_gaps: [2, 5]
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "All tile and routing calls remain HTTPS; no new sensitive data exposure."
+  performance:
+    status: PASS
+    notes: "Tile provider enforces concurrency limits and retry caps within 3s timeout."
+  reliability:
+    status: FAIL
+    notes: "Fallback path throws UnsupportedError on mobile, so routing fails when OSRM is unavailable."
+  maintainability:
+    status: CONCERNS
+    notes: "Need resilient configuration loading and regression coverage for fallback execution."
+
+recommendations:
+  immediate:
+    - action: "Replace Platform.environment usage with mobile-safe configuration injection and validate fallback tests."
+      refs:
+        - "lib/services/routing_service.dart"
+  future: []

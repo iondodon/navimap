@@ -75,7 +75,8 @@ void main() {
     });
 
     test('wraps permission denied errors', () async {
-      geolocator.positionStreamError = PermissionDeniedException('denied');
+      geolocator.positionStreamError =
+          const PermissionDeniedException('denied');
 
       expect(
         () => service.getLocationStream().first,
@@ -120,7 +121,8 @@ void main() {
     });
 
     test('wraps permission denied exception', () async {
-      geolocator.currentPositionError = PermissionDeniedException('denied');
+      geolocator.currentPositionError =
+          const PermissionDeniedException('denied');
 
       expect(
         () => service.getCurrentLocation(),
@@ -200,7 +202,8 @@ class _TestGeolocatorPlatform extends GeolocatorPlatform {
   }
 
   @override
-  Future<Position> getCurrentPosition({LocationSettings? locationSettings}) async {
+  Future<Position> getCurrentPosition(
+      {LocationSettings? locationSettings}) async {
     if (currentPositionError != null) {
       final error = currentPositionError!;
       if (error is Exception) {
@@ -228,24 +231,23 @@ class _TestGeolocatorPlatform extends GeolocatorPlatform {
   Future<bool> openLocationSettings() => _unsupported();
 
   @override
-  Future<Position?> getLastKnownPosition({bool forceLocationManager = false}) => _unsupported();
+  Future<Position?> getLastKnownPosition({bool forceLocationManager = false}) =>
+      _unsupported();
 
   @override
   Future<LocationAccuracyStatus> getLocationAccuracy() => _unsupported();
 
-  @override
   Future<bool> isBackgroundModeEnabled() => _unsupported();
 
-  @override
   Future<void> setBackgroundMode({required bool enable}) => _unsupported();
 
-  @override
   Future<void> updateSettings({
     LocationAccuracy? accuracy,
     int? distanceFilter,
     bool? forceLocationManager,
     Duration? timeLimit,
-  }) => _unsupported();
+  }) =>
+      _unsupported();
 
   @override
   double distanceBetween(
@@ -253,7 +255,8 @@ class _TestGeolocatorPlatform extends GeolocatorPlatform {
     double startLongitude,
     double endLatitude,
     double endLongitude,
-  ) => throw UnimplementedError();
+  ) =>
+      throw UnimplementedError();
 
   @override
   double bearingBetween(
@@ -261,9 +264,9 @@ class _TestGeolocatorPlatform extends GeolocatorPlatform {
     double startLongitude,
     double endLatitude,
     double endLongitude,
-  ) => throw UnimplementedError();
+  ) =>
+      throw UnimplementedError();
 
-  @override
   Future<void> startListening({
     LocationAccuracy? accuracy,
     int? distanceFilter,
@@ -271,9 +274,9 @@ class _TestGeolocatorPlatform extends GeolocatorPlatform {
     Duration? intervalDuration,
     bool? forceLocationManager,
     bool? useHighAccuracy,
-  }) => _unsupported();
+  }) =>
+      _unsupported();
 
-  @override
   Future<void> stopListening() => _unsupported();
 
   Future<T> _unsupported<T>() => Future<T>.error(UnimplementedError());

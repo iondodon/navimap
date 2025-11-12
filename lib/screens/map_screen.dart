@@ -8,9 +8,10 @@ import 'package:provider/provider.dart';
 
 import '../models/destination.dart';
 import '../models/route.dart' as nav;
-import '../models/user_location.dart';
 import '../services/location_service.dart';
+import '../services/osm_tile_provider.dart';
 import '../state/app_state.dart';
+import '../state/error_state.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key, this.tileProvider});
@@ -28,12 +29,55 @@ class _MapScreenState extends State<MapScreen> {
   );
 
   final MapController _mapController = MapController();
+  OsmTileProvider? _managedTileProvider;
   bool _initialized = false;
   bool _hasPromptedPermission = false;
   bool _isPermissionDialogOpen = false;
   _TapFeedbackData? _tapFeedback;
   Timer? _tapFeedbackTimer;
   int _destinationMarkerVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.tileProvider == null) {
+      _managedTileProvider = OsmTileProvider(
+        onError: (error) {
+          if (!mounted) {
+            return;
+          }
+          context.read<AppState>().reportTileError(error);
+        },
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _tapFeedbackTimer?.cancel();
+    _managedTileProvider?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant MapScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tileProvider != widget.tileProvider) {
+      if (widget.tileProvider == null) {
+        _managedTileProvider ??= OsmTileProvider(
+          onError: (error) {
+            if (!mounted) {
+              return;
+            }
+            context.read<AppState>().reportTileError(error);
+          },
+        );
+      } else {
+        _managedTileProvider?.dispose();
+        _managedTileProvider = null;
+      }
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -54,9 +98,12 @@ class _MapScreenState extends State<MapScreen> {
         builder: (context, appState, _) {
           _handleSideEffects(appState);
 
-          final connectivity = appState.connectivityStatus;
-          final showMap = connectivity == true;
-          final showOffline = connectivity == false;
+          final bool? connectivity = appState.connectivityStatus;
+          final bool showMap = connectivity == true;
+          final bool showOffline = connectivity == false;
+          final ErrorState? tileError = appState.tileError;
+          final ErrorState? networkError = appState.networkError;
+          final ErrorState? locationError = appState.locationError;
 
           return Stack(
             fit: StackFit.expand,
@@ -70,27 +117,41 @@ class _MapScreenState extends State<MapScreen> {
                   showOffline: showOffline,
                 ),
               if (showMap) _buildTapFeedbackOverlay(),
+              if (showMap) _buildOsmAttribution(),
               if (appState.isCheckingConnectivity ||
                   (showMap && !appState.isMapReady))
                 const _MapLoadingOverlay(),
-              if (appState.hasTileError && showMap)
+              if (showMap && networkError != null)
+                _NetworkStatusBanner(
+                  message: networkError.message,
+                  canRetry: networkError.canRetry,
+                  onRetry: networkError.canRetry
+                      ? () {
+                          appState.clearNetworkError();
+                          appState.retryConnectivityCheck();
+                        }
+                      : null,
+                ),
+              if (tileError != null && showMap)
                 _TileErrorBanner(
-                  message: appState.tileErrorMessage ??
-                      'Tile loading issue detected.',
-                  onRetry: () {
-                    appState.clearTileError();
-                    appState.retryConnectivityCheck();
-                  },
+                  message: tileError.message,
+                  onRetry: tileError.canRetry
+                      ? () {
+                          appState.clearTileError();
+                          appState.retryConnectivityCheck();
+                        }
+                      : null,
                 ),
               if (appState.isLocationLoading)
                 const _InlineStatusBanner(
                   message: 'Acquiring your location…',
                   icon: Icons.gps_fixed,
                 ),
-              if (appState.locationError != null)
+              if (locationError != null)
                 _LocationErrorBanner(
-                  message: appState.locationError!,
-                  onRetry: appState.hasLocationPermission &&
+                  message: locationError.message,
+                  onRetry: locationError.canRetry &&
+                          appState.hasLocationPermission &&
                           appState.isLocationServiceEnabled
                       ? () {
                           appState.fetchCurrentLocation();
@@ -121,7 +182,8 @@ class _MapScreenState extends State<MapScreen> {
     final locationLayers = _buildLocationLayers(appState);
     final routeLayer = _buildRouteLayer(appState);
     final destinationLayer = _buildDestinationLayer(appState);
-    final tileProvider = widget.tileProvider ?? NetworkTileProvider();
+    final tileProvider =
+        widget.tileProvider ?? _managedTileProvider ?? NetworkTileProvider();
 
     return FlutterMap(
       key: ValueKey('flutter-map-${appState.retryToken}'),
@@ -248,12 +310,37 @@ class _MapScreenState extends State<MapScreen> {
             FilledButton(
               onPressed: () {
                 appState.clearTileError();
+                appState.clearNetworkError();
                 appState.retryConnectivityCheck();
               },
               child: const Text('Retry'),
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildOsmAttribution() {
+    return const Positioned(
+      right: 12,
+      bottom: 12,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Color.fromRGBO(0, 0, 0, 0.6),
+          borderRadius: BorderRadius.all(Radius.circular(8)),
+        ),
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            '© OpenStreetMap contributors',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -265,7 +352,7 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     final markerKey = ValueKey(
-        'destination-${_destinationMarkerVersion}-${destination.latitude}-${destination.longitude}');
+        'destination-$_destinationMarkerVersion-${destination.latitude}-${destination.longitude}');
 
     return MarkerLayer(
       markers: [
@@ -301,32 +388,39 @@ class _MapScreenState extends State<MapScreen> {
 
   List<Widget> _buildRouteStatusOverlays(AppState appState) {
     final overlays = <Widget>[];
-    final routeError = appState.routeError;
-    if (routeError != null) {
+    final routingError = appState.routingError;
+    if (routingError != null) {
+      final retryAction = routingError.canRetry
+          ? () {
+              appState.clearRoutingError();
+              appState.retryRouteCalculation();
+            }
+          : null;
       overlays.add(
         Positioned(
           left: 16,
           right: 16,
           top: 72,
           child: _RouteStatusBanner.error(
-            message: routeError,
-            onDismiss: appState.clearRouteError,
+            message: routingError.message,
+            onDismiss: appState.clearRoutingError,
+            onRetry: retryAction,
           ),
         ),
       );
     } else if (appState.isCalculatingRoute) {
       overlays.add(
-        Positioned(
+        const Positioned(
           left: 16,
           right: 16,
           top: 72,
-          child: const _RouteStatusBanner.loading(),
+          child: _RouteStatusBanner.loading(),
         ),
       );
     }
 
     final route = appState.currentRoute;
-    if (route != null && routeError == null) {
+    if (route != null && routingError == null) {
       overlays.add(
         Positioned(
           left: 16,
@@ -393,11 +487,12 @@ class _MapScreenState extends State<MapScreen> {
             ),
             FilledButton(
               onPressed: () async {
+                final navigator = Navigator.of(context);
                 final status = await appState.requestLocationAccess();
                 if (!mounted) {
                   return;
                 }
-                Navigator.of(context).pop(status);
+                navigator.pop(status);
               },
               child: const Text('Allow'),
             ),
@@ -462,12 +557,6 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-
-  @override
-  void dispose() {
-    _tapFeedbackTimer?.cancel();
-    super.dispose();
-  }
 }
 
 enum _RouteStatusVariant { loading, error }
@@ -476,14 +565,19 @@ class _RouteStatusBanner extends StatelessWidget {
   const _RouteStatusBanner.loading()
       : message = 'Calculating optimal route…',
         variant = _RouteStatusVariant.loading,
-        onDismiss = null;
+        onDismiss = null,
+        onRetry = null;
 
-  const _RouteStatusBanner.error({required this.message, this.onDismiss})
-      : variant = _RouteStatusVariant.error;
+  const _RouteStatusBanner.error({
+    required this.message,
+    this.onDismiss,
+    this.onRetry,
+  }) : variant = _RouteStatusVariant.error;
 
   final String message;
   final _RouteStatusVariant variant;
   final VoidCallback? onDismiss;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -525,6 +619,14 @@ class _RouteStatusBanner extends StatelessWidget {
                 ),
               ),
             ),
+            if (!isLoading && onRetry != null)
+              TextButton(
+                onPressed: onRetry,
+                child: Text(
+                  'Retry',
+                  style: TextStyle(color: foreground),
+                ),
+              ),
             if (!isLoading && onDismiss != null)
               IconButton(
                 onPressed: onDismiss,
@@ -605,7 +707,7 @@ class _RouteInfoCard extends StatelessWidget {
     if (remaining == 0) {
       return hours == 1 ? '1 hr' : '$hours hrs';
     }
-    return '$hours hr ${remaining} min';
+    return '$hours hr $remaining min';
   }
 }
 
@@ -713,11 +815,11 @@ class _TapFeedbackData {
 class _TileErrorBanner extends StatelessWidget {
   const _TileErrorBanner({
     required this.message,
-    required this.onRetry,
+    this.onRetry,
   });
 
   final String message;
-  final VoidCallback onRetry;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -742,11 +844,64 @@ class _TileErrorBanner extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
-                TextButton(
-                  onPressed: onRetry,
-                  child: const Text('Retry',
-                      style: TextStyle(color: Colors.white)),
+                if (onRetry != null)
+                  TextButton(
+                    onPressed: onRetry,
+                    child: const Text('Retry',
+                        style: TextStyle(color: Colors.white)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NetworkStatusBanner extends StatelessWidget {
+  const _NetworkStatusBanner({
+    required this.message,
+    required this.canRetry,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool canRetry;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: SafeArea(
+        minimum: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Material(
+          color: Colors.black.withOpacity(0.82),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.wifi_off, color: Colors.white),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(
+                    message,
+                    style: const TextStyle(color: Colors.white),
+                  ),
                 ),
+                if (canRetry && onRetry != null) ...[
+                  const SizedBox(width: 12),
+                  TextButton(
+                    onPressed: onRetry,
+                    child: const Text(
+                      'Retry',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

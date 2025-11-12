@@ -128,7 +128,8 @@ void main() {
 
     await state.initializeLocation();
 
-    expect(state.locationError, contains('Location services are disabled'));
+    expect(state.locationError?.message,
+        contains('Location services are disabled'));
 
     await _waitForConnectivity(state);
     state.dispose();
@@ -147,7 +148,7 @@ void main() {
     final destination = Destination(latitude: 37.0, longitude: -122.0);
     final userLocation = _location(latitude: 36.5, longitude: -121.8);
     final updates = <bool>[];
-    final listener = () => updates.add(state.isDestinationUpdating);
+    void listener() => updates.add(state.isDestinationUpdating);
     state.addListener(listener);
 
     final completer = Completer<Route>();
@@ -177,7 +178,7 @@ void main() {
 
     expect(state.currentRoute, isNotNull);
     expect(state.currentRoute!.points.length, 2);
-    expect(state.routeError, isNull);
+    expect(state.routingError, isNull);
     expect(state.isCalculatingRoute, isFalse);
     expect(updates, containsAllInOrder([true, false]));
 
@@ -197,14 +198,14 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 5));
 
     expect(state.currentDestination, isNotNull);
-    expect(state.routeError, contains('location unavailable'));
+    expect(state.routingError?.message, contains('location unavailable'));
 
     state.clearDestination();
     await Future<void>.delayed(const Duration(milliseconds: 5));
 
     expect(state.currentDestination, isNull);
     expect(state.hasDestination, isFalse);
-    expect(state.routeError, isNull);
+    expect(state.routingError, isNull);
 
     state.dispose();
   });
@@ -226,7 +227,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 5));
 
     expect(state.currentDestination, destination);
-    expect(state.routeError, contains('location unavailable'));
+    expect(state.routingError?.message, contains('location unavailable'));
     expect(state.isCalculatingRoute, isFalse);
     expect(routingService.callCount, 0);
 
@@ -253,7 +254,7 @@ void main() {
 
     await Future<void>.delayed(const Duration(milliseconds: 5));
 
-    expect(state.routeError, contains('OSRM unreachable'));
+    expect(state.routingError?.message, contains('OSRM unreachable'));
     expect(state.currentRoute, isNull);
     expect(state.isCalculatingRoute, isFalse);
     expect(routingService.callCount, 1);
@@ -295,7 +296,7 @@ void main() {
     expect(state.currentDestination, isNull);
     expect(state.currentRoute, isNull);
     expect(state.isCalculatingRoute, isFalse);
-    expect(state.routeError, isNull);
+    expect(state.routingError, isNull);
 
     state.dispose();
   });
@@ -324,7 +325,7 @@ void main() {
 
     await Future<void>.delayed(const Duration(milliseconds: 5));
     expect(routingService.callCount, 0);
-    expect(state.routeError, contains('location unavailable'));
+    expect(state.routingError?.message, contains('location unavailable'));
 
     state.updateLocation(_location(latitude: 42.5, longitude: -75.5));
 
@@ -332,7 +333,7 @@ void main() {
 
     expect(routingService.callCount, 1);
     expect(state.currentRoute, isNotNull);
-    expect(state.routeError, isNull);
+    expect(state.routingError, isNull);
     expect(state.isCalculatingRoute, isFalse);
 
     state.dispose();
@@ -379,7 +380,7 @@ class _StubLocationService extends LocationService {
   LocationPermissionStatus requestPermissionResult =
       LocationPermissionStatus.denied;
   bool serviceEnabled = true;
-  Stream<UserLocation> locationStream = Stream<UserLocation>.empty();
+  Stream<UserLocation> locationStream = const Stream<UserLocation>.empty();
   Future<UserLocation> Function()? onGetCurrentLocation;
 
   @override
@@ -432,11 +433,11 @@ class _NoopGeolocator extends GeolocatorPlatform {
 
   @override
   Stream<ServiceStatus> getServiceStatusStream() =>
-      Stream<ServiceStatus>.empty();
+      const Stream<ServiceStatus>.empty();
 
   @override
   Stream<Position> getPositionStream({LocationSettings? locationSettings}) =>
-      Stream<Position>.empty();
+      const Stream<Position>.empty();
 
   @override
   Future<Position> getCurrentPosition({LocationSettings? locationSettings}) =>

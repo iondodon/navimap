@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +10,8 @@ import '../models/route.dart';
 import '../models/user_location.dart';
 import '../services/location_service.dart';
 import '../services/routing_service.dart';
+import '../services/osm_tile_provider.dart';
+import 'error_state.dart';
 
 class AppState extends ChangeNotifier {
   AppState({
@@ -39,8 +42,8 @@ class AppState extends ChangeNotifier {
   LatLng _center = defaultCenter;
   double _zoom = defaultZoom;
   bool _mapReady = false;
-  bool _hasTileError = false;
-  String? _tileErrorMessage;
+  ErrorState? _tileError;
+  ErrorState? _networkError;
   bool? _hasConnectivity;
   bool _isCheckingConnectivity = false;
   Future<void>? _connectivityFuture;
@@ -51,7 +54,7 @@ class AppState extends ChangeNotifier {
   bool _isRequestingPermission = false;
   bool _isLocationLoading = false;
   bool _isLocationServiceEnabled = true;
-  String? _locationError;
+  ErrorState? _locationError;
   bool _shouldCenterOnUser = false;
   bool _hasCenteredOnUser = false;
   Destination? _currentDestination;
@@ -59,7 +62,7 @@ class AppState extends ChangeNotifier {
   String? _destinationError;
   Route? _currentRoute;
   bool _isCalculatingRoute = false;
-  String? _routeError;
+  ErrorState? _routingError;
   int _routeRequestId = 0;
 
   LatLng get center => _center;
@@ -67,8 +70,9 @@ class AppState extends ChangeNotifier {
   double get minZoom => minZoomLevel;
   double get maxZoom => maxZoomLevel;
   bool get isMapReady => _mapReady;
-  bool get hasTileError => _hasTileError;
-  String? get tileErrorMessage => _tileErrorMessage;
+  bool get hasTileError => _tileError != null;
+  ErrorState? get tileError => _tileError;
+  ErrorState? get networkError => _networkError;
   bool? get connectivityStatus => _hasConnectivity;
   bool get hasConnectivity => _hasConnectivity ?? false;
   bool get isConnectivityKnown => _hasConnectivity != null;
@@ -80,7 +84,7 @@ class AppState extends ChangeNotifier {
   bool get isRequestingPermission => _isRequestingPermission;
   bool get isLocationLoading => _isLocationLoading;
   bool get isLocationServiceEnabled => _isLocationServiceEnabled;
-  String? get locationError => _locationError;
+  ErrorState? get locationError => _locationError;
   bool get shouldCenterOnUser => _shouldCenterOnUser;
   Destination? get currentDestination => _currentDestination;
   bool get hasDestination => _currentDestination != null;
@@ -89,13 +93,13 @@ class AppState extends ChangeNotifier {
   Route? get currentRoute => _currentRoute;
   bool get hasRoute => _currentRoute != null;
   bool get isCalculatingRoute => _isCalculatingRoute;
-  String? get routeError => _routeError;
+  ErrorState? get routingError => _routingError;
 
   Future<void> retryConnectivityCheck() {
     _retryToken++;
     _hasConnectivity = null;
-    _hasTileError = false;
-    _tileErrorMessage = null;
+    _tileError = null;
+    _networkError = null;
     _mapReady = false;
     _isCheckingConnectivity = true;
     notifyListeners();
@@ -115,22 +119,45 @@ class AppState extends ChangeNotifier {
           .timeout(const Duration(seconds: 3));
       _hasConnectivity = response.statusCode == 200;
       if (_hasConnectivity == true) {
-        _hasTileError = false;
-        _tileErrorMessage = null;
+        _tileError = null;
+        _networkError = null;
       } else {
-        _hasTileError = true;
-        _tileErrorMessage =
-            'Tile server responded with status ${response.statusCode}.';
+        final isRateLimited = response.statusCode == HttpStatus.tooManyRequests;
+        final serverMessage = isRateLimited
+            ? 'We have hit the OpenStreetMap rate limit. Please try again shortly.'
+            : 'Tile server responded with status ${response.statusCode}.';
+        _tileError = ErrorState.tiles(
+          isRateLimited ? TileIssueCode.rateLimited : TileIssueCode.serverError,
+          serverMessage,
+        );
+        _networkError = ErrorState.network(
+          isRateLimited
+              ? NetworkErrorCode.rateLimited
+              : NetworkErrorCode.serverError,
+          serverMessage,
+        );
       }
     } on TimeoutException catch (error) {
       _hasConnectivity = false;
-      _hasTileError = true;
-      _tileErrorMessage =
-          'Tile server timeout: ${error.message ?? 'request exceeded 3 seconds'}';
+      final details = error.message ?? 'request exceeded 3 seconds';
+      _tileError = ErrorState.tiles(
+        TileIssueCode.timeout,
+        'Tile server timeout: $details',
+      );
+      _networkError = ErrorState.network(
+        NetworkErrorCode.timeout,
+        'OpenStreetMap tiles timed out. Retry in a moment.',
+      );
     } catch (error) {
       _hasConnectivity = false;
-      _hasTileError = true;
-      _tileErrorMessage = 'Network error: $error';
+      _tileError = ErrorState.tiles(
+        TileIssueCode.network,
+        'Tile load failed: $error',
+      );
+      _networkError = ErrorState.network(
+        NetworkErrorCode.offline,
+        'No internet connection detected. Showing cached tiles when available.',
+      );
     } finally {
       _isCheckingConnectivity = false;
       notifyListeners();
@@ -168,8 +195,15 @@ class AppState extends ChangeNotifier {
       }
       if (!_hasLocationPermission) {
         _locationError = _permissionDeniedForever
-            ? 'Location permission permanently denied. Enable permissions from Settings.'
-            : 'Location permission denied. We cannot display your position.';
+            ? ErrorState.location(
+                LocationIssueCode.permissionDeniedForever,
+                'Location permission permanently denied. Enable permissions from Settings.',
+                canRetry: false,
+              )
+            : ErrorState.location(
+                LocationIssueCode.permissionDenied,
+                'Location permission denied. We cannot display your position.',
+              );
       }
       return status;
     } finally {
@@ -230,17 +264,52 @@ class AppState extends ChangeNotifier {
   }
 
   void reportTileError(Object error) {
-    _hasTileError = true;
-    _tileErrorMessage = 'Tile load failed: $error';
+    if (error is TileFetchException) {
+      if (error.code == TileIssueCode.cacheHit) {
+        if (error.networkCode != null) {
+          _networkError = ErrorState.network(
+            error.networkCode!,
+            error.message,
+            canRetry: error.retryable,
+          );
+          notifyListeners();
+        }
+        return;
+      }
+      _tileError = ErrorState.tiles(
+        error.code,
+        error.message,
+        canRetry: error.retryable,
+      );
+      if (error.networkCode != null) {
+        _networkError = ErrorState.network(
+          error.networkCode!,
+          error.message,
+          canRetry: error.retryable,
+        );
+      }
+    } else {
+      _tileError = ErrorState.tiles(
+        TileIssueCode.unknown,
+        'Tile load failed: $error',
+      );
+    }
     notifyListeners();
   }
 
   void clearTileError() {
-    if (!_hasTileError) {
+    if (_tileError == null) {
       return;
     }
-    _hasTileError = false;
-    _tileErrorMessage = null;
+    _tileError = null;
+    notifyListeners();
+  }
+
+  void clearNetworkError() {
+    if (_networkError == null) {
+      return;
+    }
+    _networkError = null;
     notifyListeners();
   }
 
@@ -276,16 +345,16 @@ class AppState extends ChangeNotifier {
 
   void setRoute(Route route) {
     _currentRoute = route;
-    _routeError = null;
+    _routingError = null;
     _isCalculatingRoute = false;
     notifyListeners();
   }
 
   void clearRoute({bool notify = true}) {
     final hadState =
-        _currentRoute != null || _routeError != null || _isCalculatingRoute;
+        _currentRoute != null || _routingError != null || _isCalculatingRoute;
     _currentRoute = null;
-    _routeError = null;
+    _routingError = null;
     _isCalculatingRoute = false;
     _routeRequestId++;
     if (notify && hadState) {
@@ -293,18 +362,26 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  void setRouteError(String message) {
-    _routeError = message;
+  void setRoutingError(ErrorState error) {
+    _currentRoute = null;
+    _routingError = error;
     _isCalculatingRoute = false;
     notifyListeners();
   }
 
-  void clearRouteError() {
-    if (_routeError == null) {
+  void clearRoutingError() {
+    if (_routingError == null) {
       return;
     }
-    _routeError = null;
+    _routingError = null;
     notifyListeners();
+  }
+
+  void retryRouteCalculation() {
+    if (_currentDestination == null) {
+      return;
+    }
+    _calculateRouteForDestination(clearExistingRoute: true);
   }
 
   @override
@@ -323,8 +400,13 @@ class AppState extends ChangeNotifier {
     final enabled = await _locationService.isLocationServiceEnabled();
     _isLocationServiceEnabled = enabled;
     if (!enabled) {
-      _locationError =
-          'Location services are disabled. Enable GPS to view your position.';
+      _locationError = ErrorState.location(
+        LocationIssueCode.serviceDisabled,
+        'Location services are disabled. Enable GPS to view your position.',
+      );
+    } else if (_locationError?.locationCode ==
+        LocationIssueCode.serviceDisabled) {
+      _locationError = null;
     }
   }
 
@@ -355,7 +437,10 @@ class AppState extends ChangeNotifier {
         if (error is LocationServiceException) {
           _applyLocationError(error, notify: true);
         } else {
-          _locationError = 'Unexpected location error: $error';
+          _locationError = ErrorState.location(
+            LocationIssueCode.unknown,
+            'Unexpected location error: $error',
+          );
           notifyListeners();
         }
       },
@@ -390,26 +475,37 @@ class AppState extends ChangeNotifier {
     switch (error.code) {
       case LocationServiceErrorCode.permissionDenied:
         _hasLocationPermission = false;
-        _locationError =
-            'Location permission denied. Enable access to see your position.';
+        _locationError = ErrorState.location(
+          LocationIssueCode.permissionDenied,
+          'Location permission denied. Enable access to see your position.',
+        );
         break;
       case LocationServiceErrorCode.permissionPermanentlyDenied:
         _permissionDeniedForever = true;
-        _locationError =
-            'Location permissions permanently denied. Update settings to continue.';
+        _locationError = ErrorState.location(
+          LocationIssueCode.permissionDeniedForever,
+          'Location permissions permanently denied. Update settings to continue.',
+          canRetry: false,
+        );
         break;
       case LocationServiceErrorCode.serviceDisabled:
-        _locationError =
-            'Location services are disabled. Turn on GPS and try again.';
         _isLocationServiceEnabled = false;
+        _locationError = ErrorState.location(
+          LocationIssueCode.serviceDisabled,
+          'Location services are disabled. Turn on GPS and try again.',
+        );
         break;
       case LocationServiceErrorCode.timeout:
-        _locationError =
-            'Fetching your location is taking longer than expected. Please try again.';
+        _locationError = ErrorState.location(
+          LocationIssueCode.timeout,
+          'Fetching your location is taking longer than expected. Please try again.',
+        );
         break;
       case LocationServiceErrorCode.unknown:
-        _locationError =
-            'We ran into a problem retrieving your location. Retry in a moment.';
+        _locationError = ErrorState.location(
+          LocationIssueCode.unknown,
+          'We ran into a problem retrieving your location. Retry in a moment.',
+        );
         break;
     }
     if (notify) {
@@ -439,10 +535,13 @@ class AppState extends ChangeNotifier {
     final location = _currentLocation;
 
     if (location == null) {
-      _routeError =
-          'Current location unavailable. Enable location services and try again.';
-      _isCalculatingRoute = false;
-      notifyListeners();
+      setRoutingError(
+        ErrorState.routing(
+          RoutingIssueCode.startLocationUnavailable,
+          'Current location unavailable. Enable location services and try again.',
+          canRetry: true,
+        ),
+      );
       return;
     }
 
@@ -458,19 +557,22 @@ class AppState extends ChangeNotifier {
       if (_routeRequestId != requestId) {
         return;
       }
-      final message = error is RoutingException
-          ? error.message
-          : 'Route calculation failed. Please try again.';
-      setRouteError(message);
+      final routingError = error is RoutingException
+          ? _mapRoutingException(error)
+          : ErrorState.routing(
+              RoutingIssueCode.unknown,
+              'Route calculation failed. Please try again.',
+            );
+      setRoutingError(routingError);
     });
   }
 
   int _prepareRouteRequest({required bool clearExistingRoute}) {
     if (clearExistingRoute) {
       final hadState =
-          _currentRoute != null || _routeError != null || _isCalculatingRoute;
+          _currentRoute != null || _routingError != null || _isCalculatingRoute;
       _currentRoute = null;
-      _routeError = null;
+      _routingError = null;
       _isCalculatingRoute = false;
       _routeRequestId++;
       if (hadState) {
@@ -479,9 +581,55 @@ class AppState extends ChangeNotifier {
       return _routeRequestId;
     }
 
-    _routeError = null;
+    _routingError = null;
     _isCalculatingRoute = false;
     _routeRequestId++;
     return _routeRequestId;
+  }
+
+  ErrorState _mapRoutingException(RoutingException error) {
+    switch (error.code) {
+      case RoutingIssueCode.networkUnavailable:
+        return ErrorState.routing(
+          RoutingIssueCode.networkUnavailable,
+          'No internet connection detected. Check your connection and try again.',
+        );
+      case RoutingIssueCode.timeout:
+        return ErrorState.routing(
+          RoutingIssueCode.timeout,
+          'Route calculation timed out. Please try again.',
+        );
+      case RoutingIssueCode.rateLimited:
+        return ErrorState.routing(
+          RoutingIssueCode.rateLimited,
+          'Routing service is rate limited right now. Retry in a few moments.',
+        );
+      case RoutingIssueCode.serverError:
+        return ErrorState.routing(
+          RoutingIssueCode.serverError,
+          'Routing service returned an error. Please try again shortly.',
+        );
+      case RoutingIssueCode.configuration:
+        return ErrorState.routing(
+          RoutingIssueCode.configuration,
+          'Routing configuration is missing. Contact support to resolve this issue.',
+          canRetry: false,
+        );
+      case RoutingIssueCode.responseMalformed:
+        return ErrorState.routing(
+          RoutingIssueCode.responseMalformed,
+          'Received an unexpected response from the routing service. Retry shortly.',
+        );
+      case RoutingIssueCode.startLocationUnavailable:
+        return ErrorState.routing(
+          RoutingIssueCode.startLocationUnavailable,
+          'Current location unavailable. Enable location services and try again.',
+        );
+      case RoutingIssueCode.unknown:
+        return ErrorState.routing(
+          RoutingIssueCode.unknown,
+          error.message,
+        );
+    }
   }
 }

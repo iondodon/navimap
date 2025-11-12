@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/map_screen.dart';
@@ -9,9 +10,10 @@ void main() {
 }
 
 class NaviMapApp extends StatelessWidget {
-  const NaviMapApp({super.key, this.createAppState});
+  const NaviMapApp({super.key, this.createAppState, this.tileProvider});
 
   final AppState Function()? createAppState;
+  final TileProvider? tileProvider;
 
   @override
   Widget build(BuildContext context) {
@@ -24,7 +26,7 @@ class NaviMapApp extends StatelessWidget {
           useMaterial3: true,
         ),
         debugShowCheckedModeBanner: false,
-        home: const MapScreen(),
+        home: MapScreen(tileProvider: tileProvider),
       ),
     );
   }

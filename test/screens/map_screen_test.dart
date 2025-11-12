@@ -70,6 +70,22 @@ void main() {
       expect(markerLayers.first.markers, hasLength(1));
     });
 
+    testWidgets('shows OpenStreetMap attribution when map is visible',
+        (tester) async {
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: appState,
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
+          ),
+        ),
+      );
+
+      await _pumpUntilConnectivity(tester, appState);
+
+      expect(find.text('© OpenStreetMap contributors'), findsOneWidget);
+    });
+
     testWidgets('map onTap callback updates and replaces destination markers',
         (tester) async {
       await tester.pumpWidget(
@@ -434,7 +450,7 @@ void main() {
       expect(find.text('Driving route'), findsNothing);
       expect(find.byType(PolylineLayer), findsNothing);
       expect(routingService.callCount, 1);
-      expect(appState.routeError, contains('Service down'));
+      expect(appState.routingError?.message, contains('Service down'));
     });
   });
 
@@ -554,14 +570,10 @@ Future<void> _waitForConnectivity(AppState state) async {
 
 class _TestAppState extends AppState {
   _TestAppState({
-    required http.Client httpClient,
-    required LocationService locationService,
-    RoutingService? routingService,
-  }) : super(
-          httpClient: httpClient,
-          locationService: locationService,
-          routingService: routingService,
-        );
+    required super.httpClient,
+    required super.locationService,
+    super.routingService,
+  });
 
   @override
   Future<void> initializeLocation() async {
@@ -608,7 +620,7 @@ class _StubLocationService extends LocationService {
   LocationPermissionStatus requestPermissionResult =
       LocationPermissionStatus.denied;
   bool serviceEnabled = true;
-  Stream<UserLocation> locationStream = Stream<UserLocation>.empty();
+  Stream<UserLocation> locationStream = const Stream<UserLocation>.empty();
   Future<UserLocation> Function()? onGetCurrentLocation;
 
   @override

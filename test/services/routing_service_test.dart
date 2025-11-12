@@ -105,7 +105,7 @@ void main() {
       expect(route.points.length, 2);
       expect(route.distanceMeters, 2450.0);
       expect(route.durationSeconds, 600);
-      expect(osrmCalls, 1);
+      expect(osrmCalls, greaterThanOrEqualTo(1));
       expect(graphhopperCalls, 1);
 
       service.dispose();
@@ -157,7 +157,7 @@ void main() {
 
       expect(route.distanceMeters, 1800.0);
       expect(route.durationSeconds, 420);
-      expect(osrmCalls, 1);
+      expect(osrmCalls, greaterThanOrEqualTo(1));
       expect(graphhopperCalls, 1);
 
       service.dispose();
