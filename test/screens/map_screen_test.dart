@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -9,9 +10,11 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:navimap/models/destination.dart';
+import 'package:navimap/models/route.dart' as nav_route;
 import 'package:navimap/models/user_location.dart';
 import 'package:navimap/screens/map_screen.dart';
 import 'package:navimap/services/location_service.dart';
+import 'package:navimap/services/routing_service.dart';
 import 'package:navimap/state/app_state.dart';
 import 'package:provider/provider.dart';
 
@@ -39,8 +42,8 @@ void main() {
       await tester.pumpWidget(
         ChangeNotifierProvider<AppState>.value(
           value: appState,
-          child: const MaterialApp(
-            home: Scaffold(body: MapScreen()),
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
           ),
         ),
       );
@@ -72,8 +75,8 @@ void main() {
       await tester.pumpWidget(
         ChangeNotifierProvider<AppState>.value(
           value: appState,
-          child: const MaterialApp(
-            home: Scaffold(body: MapScreen()),
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
           ),
         ),
       );
@@ -140,8 +143,8 @@ void main() {
       await tester.pumpWidget(
         ChangeNotifierProvider<AppState>.value(
           value: appState,
-          child: const MaterialApp(
-            home: Scaffold(body: MapScreen()),
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
           ),
         ),
       );
@@ -194,8 +197,8 @@ void main() {
       await tester.pumpWidget(
         ChangeNotifierProvider<AppState>.value(
           value: appState,
-          child: const MaterialApp(
-            home: Scaffold(body: MapScreen()),
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
           ),
         ),
       );
@@ -227,6 +230,211 @@ void main() {
       final marker = markerLayers.single.markers.single;
       expect(marker.point.latitude, closeTo(location.latitude, 1e-6));
       expect(marker.point.longitude, closeTo(location.longitude, 1e-6));
+    });
+  });
+
+  group('Route overlays', () {
+    late _StubLocationService locationService;
+    late _StubRoutingService routingService;
+    late _TestAppState appState;
+
+    setUp(() async {
+      locationService = _StubLocationService();
+      routingService = _StubRoutingService();
+      appState = _TestAppState(
+        httpClient: MockClient((_) async => http.Response('', 200)),
+        locationService: locationService,
+        routingService: routingService,
+      );
+      await _waitForConnectivity(appState);
+    });
+
+    tearDown(() async {
+      await _waitForConnectivity(appState);
+      appState.dispose();
+    });
+
+    testWidgets('displays route polyline and summary when route present',
+        (tester) async {
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: appState,
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
+          ),
+        ),
+      );
+
+      await _pumpUntilConnectivity(tester, appState);
+
+      appState.setRoute(
+        nav_route.Route(
+          points: const [
+            LatLng(37.7749, -122.4194),
+            LatLng(37.7793, -122.4180),
+            LatLng(37.7820, -122.4165),
+          ],
+          distanceMeters: 2450,
+          durationSeconds: 480,
+        ),
+      );
+
+      await tester.pump();
+
+      expect(find.byType(PolylineLayer), findsOneWidget);
+      expect(find.text('Driving route'), findsOneWidget);
+      expect(find.textContaining('km'), findsWidgets);
+    });
+
+    testWidgets('shows loading banner during active route calculation',
+        (tester) async {
+      final completer = Completer<nav_route.Route>();
+      routingService.onCalculate = (start, destination) => completer.future;
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: appState,
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
+          ),
+        ),
+      );
+
+      await _pumpUntilConnectivity(tester, appState);
+
+      appState.updateLocation(
+        UserLocation(
+          latitude: 37.7749,
+          longitude: -122.4194,
+          accuracy: 5,
+          timestamp: DateTime(2025, 1, 1),
+        ),
+      );
+
+      appState.setDestination(
+        Destination(latitude: 37.7793, longitude: -122.4180),
+      );
+
+      await tester.pump();
+
+      expect(find.text('Calculating optimal route…'), findsOneWidget);
+      expect(routingService.callCount, 1);
+
+      completer.complete(
+        nav_route.Route(
+          points: const [
+            LatLng(37.7749, -122.4194),
+            LatLng(37.7793, -122.4180),
+          ],
+          distanceMeters: 1200,
+          durationSeconds: 300,
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(find.text('Calculating optimal route…'), findsNothing);
+      expect(find.text('Driving route'), findsOneWidget);
+    });
+
+    testWidgets('map tap triggers full route workflow', (tester) async {
+      final userLocation = UserLocation(
+        latitude: 37.7749,
+        longitude: -122.4194,
+        accuracy: 5,
+        timestamp: DateTime(2025, 1, 1),
+      );
+      appState.updateLocation(userLocation);
+
+      final completer = Completer<nav_route.Route>();
+      routingService.onCalculate = (start, destination) {
+        expect(start.latitude, userLocation.latitude);
+        expect(destination.latitude, closeTo(37.7793, 1e-6));
+        return completer.future;
+      };
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: appState,
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
+          ),
+        ),
+      );
+
+      await _pumpUntilConnectivity(tester, appState);
+
+      final flutterMap = tester.widget<FlutterMap>(find.byType(FlutterMap));
+      flutterMap.options.onTap?.call(
+        const TapPosition(Offset(200, 220), Offset(0.6, 0.4)),
+        const LatLng(37.7793, -122.4180),
+      );
+
+      await tester.pump();
+
+      expect(find.text('Calculating optimal route…'), findsOneWidget);
+      expect(routingService.callCount, 1);
+
+      completer.complete(
+        nav_route.Route(
+          points: const [
+            LatLng(37.7749, -122.4194),
+            LatLng(37.7793, -122.4180),
+            LatLng(37.7820, -122.4165),
+          ],
+          distanceMeters: 2450,
+          durationSeconds: 480,
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(find.text('Calculating optimal route…'), findsNothing);
+      expect(find.byType(PolylineLayer), findsOneWidget);
+      expect(find.text('Driving route'), findsOneWidget);
+      expect(appState.currentRoute, isNotNull);
+    });
+
+    testWidgets('displays error banner when route calculation fails',
+        (tester) async {
+      final userLocation = UserLocation(
+        latitude: 34.0522,
+        longitude: -118.2437,
+        accuracy: 5,
+        timestamp: DateTime(2025, 1, 1),
+      );
+      appState.updateLocation(userLocation);
+
+      routingService.onCalculate = (_, __) =>
+          Future<nav_route.Route>.error(RoutingException('Service down'));
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: appState,
+          child: MaterialApp(
+            home: Scaffold(body: MapScreen(tileProvider: _StubTileProvider())),
+          ),
+        ),
+      );
+
+      await _pumpUntilConnectivity(tester, appState);
+
+      final flutterMap = tester.widget<FlutterMap>(find.byType(FlutterMap));
+      flutterMap.options.onTap?.call(
+        const TapPosition(Offset(180, 200), Offset(0.5, 0.4)),
+        const LatLng(34.0600, -118.2500),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(find.textContaining('Service down'), findsOneWidget);
+      expect(find.text('Driving route'), findsNothing);
+      expect(find.byType(PolylineLayer), findsNothing);
+      expect(routingService.callCount, 1);
+      expect(appState.routeError, contains('Service down'));
     });
   });
 
@@ -328,7 +536,7 @@ Future<void> _pumpMap(WidgetTester tester, AppState state) async {
     MaterialApp(
       home: ChangeNotifierProvider<AppState>.value(
         value: state,
-        child: const MapScreen(),
+        child: MapScreen(tileProvider: _StubTileProvider()),
       ),
     ),
   );
@@ -348,12 +556,41 @@ class _TestAppState extends AppState {
   _TestAppState({
     required http.Client httpClient,
     required LocationService locationService,
-  }) : super(httpClient: httpClient, locationService: locationService);
+    RoutingService? routingService,
+  }) : super(
+          httpClient: httpClient,
+          locationService: locationService,
+          routingService: routingService,
+        );
 
   @override
   Future<void> initializeLocation() async {
     // Skip location initialization for deterministic tap tests.
   }
+}
+
+class _StubRoutingService extends RoutingService {
+  _StubRoutingService()
+      : super(httpClient: MockClient((_) async => http.Response('', 200)));
+
+  Future<nav_route.Route> Function(UserLocation, Destination)? onCalculate;
+  int callCount = 0;
+
+  @override
+  Future<nav_route.Route> calculateRoute(
+      UserLocation start, Destination destination) {
+    callCount++;
+    final handler = onCalculate;
+    if (handler != null) {
+      return handler(start, destination);
+    }
+    return Future<nav_route.Route>.error(
+      RoutingException('Routing handler not configured'),
+    );
+  }
+
+  @override
+  void dispose() {}
 }
 
 class _StubLocationService extends LocationService {
@@ -400,6 +637,88 @@ class _StubLocationService extends LocationService {
       );
     }
     return handler();
+  }
+}
+
+class _StubTileProvider extends TileProvider {
+  _StubTileProvider();
+
+  static final Uint8List _transparentImage =
+      Uint8List.fromList(_transparentPixelPng);
+
+  static const List<int> _transparentPixelPng = <int>[
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A,
+    0x00,
+    0x00,
+    0x00,
+    0x0D,
+    0x49,
+    0x48,
+    0x44,
+    0x52,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x08,
+    0x06,
+    0x00,
+    0x00,
+    0x00,
+    0x1F,
+    0x15,
+    0xC4,
+    0x89,
+    0x00,
+    0x00,
+    0x00,
+    0x0A,
+    0x49,
+    0x44,
+    0x41,
+    0x54,
+    0x78,
+    0x9C,
+    0x63,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x05,
+    0x00,
+    0x01,
+    0x0D,
+    0x0A,
+    0x2D,
+    0xB4,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x49,
+    0x45,
+    0x4E,
+    0x44,
+    0xAE,
+    0x42,
+    0x60,
+    0x82,
+  ];
+
+  @override
+  ImageProvider<Object> getImage(TileCoordinates coords, TileLayer options) {
+    return MemoryImage(_transparentImage);
   }
 }
 

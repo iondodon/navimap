@@ -7,12 +7,15 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../models/destination.dart';
+import '../models/route.dart' as nav;
 import '../models/user_location.dart';
 import '../services/location_service.dart';
 import '../state/app_state.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  const MapScreen({super.key, this.tileProvider});
+
+  final TileProvider? tileProvider;
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -106,6 +109,7 @@ class _MapScreenState extends State<MapScreen> {
                   },
                   onOpenSettings: _openSystemSettings,
                 ),
+              if (showMap) ..._buildRouteStatusOverlays(appState),
             ],
           );
         },
@@ -115,7 +119,9 @@ class _MapScreenState extends State<MapScreen> {
 
   Widget _buildMap(BuildContext context, AppState appState) {
     final locationLayers = _buildLocationLayers(appState);
+    final routeLayer = _buildRouteLayer(appState);
     final destinationLayer = _buildDestinationLayer(appState);
+    final tileProvider = widget.tileProvider ?? NetworkTileProvider();
 
     return FlutterMap(
       key: ValueKey('flutter-map-${appState.retryToken}'),
@@ -147,6 +153,7 @@ class _MapScreenState extends State<MapScreen> {
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.navimap.app',
+          tileProvider: tileProvider,
           tileBuilder: (context, tileWidget, tile) {
             return AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
@@ -158,6 +165,7 @@ class _MapScreenState extends State<MapScreen> {
           },
         ),
         ...locationLayers,
+        if (routeLayer != null) routeLayer,
         if (destinationLayer != null) destinationLayer,
       ],
     );
@@ -272,6 +280,67 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  Widget? _buildRouteLayer(AppState appState) {
+    final route = appState.currentRoute;
+    if (route == null || route.points.length < 2) {
+      return null;
+    }
+
+    return PolylineLayer(
+      polylines: [
+        Polyline(
+          points: route.points,
+          strokeWidth: 4,
+          color: Colors.blueAccent,
+          borderStrokeWidth: 1.5,
+          borderColor: Colors.white.withOpacity(0.6),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildRouteStatusOverlays(AppState appState) {
+    final overlays = <Widget>[];
+    final routeError = appState.routeError;
+    if (routeError != null) {
+      overlays.add(
+        Positioned(
+          left: 16,
+          right: 16,
+          top: 72,
+          child: _RouteStatusBanner.error(
+            message: routeError,
+            onDismiss: appState.clearRouteError,
+          ),
+        ),
+      );
+    } else if (appState.isCalculatingRoute) {
+      overlays.add(
+        Positioned(
+          left: 16,
+          right: 16,
+          top: 72,
+          child: const _RouteStatusBanner.loading(),
+        ),
+      );
+    }
+
+    final route = appState.currentRoute;
+    if (route != null && routeError == null) {
+      overlays.add(
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 24,
+          child: _RouteInfoCard(
+              route: route, isLoading: appState.isCalculatingRoute),
+        ),
+      );
+    }
+
+    return overlays;
+  }
+
   void _handleSideEffects(AppState appState) {
     if (appState.shouldCenterOnUser && appState.isMapReady) {
       final location = appState.currentLocation;
@@ -306,7 +375,7 @@ class _MapScreenState extends State<MapScreen> {
     _isPermissionDialogOpen = true;
     _hasPromptedPermission = true;
 
-    final result = await showDialog<LocationPermissionStatus?>(
+    await showDialog<LocationPermissionStatus?>(
       context: context,
       barrierDismissible: false,
       builder: (context) {
@@ -398,6 +467,145 @@ class _MapScreenState extends State<MapScreen> {
   void dispose() {
     _tapFeedbackTimer?.cancel();
     super.dispose();
+  }
+}
+
+enum _RouteStatusVariant { loading, error }
+
+class _RouteStatusBanner extends StatelessWidget {
+  const _RouteStatusBanner.loading()
+      : message = 'Calculating optimal route…',
+        variant = _RouteStatusVariant.loading,
+        onDismiss = null;
+
+  const _RouteStatusBanner.error({required this.message, this.onDismiss})
+      : variant = _RouteStatusVariant.error;
+
+  final String message;
+  final _RouteStatusVariant variant;
+  final VoidCallback? onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final bool isLoading = variant == _RouteStatusVariant.loading;
+    final Color background = isLoading
+        ? colorScheme.inverseSurface.withOpacity(0.92)
+        : colorScheme.errorContainer;
+    final Color foreground =
+        isLoading ? colorScheme.onInverseSurface : colorScheme.onErrorContainer;
+
+    return Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(12),
+      color: background,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isLoading)
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(foreground),
+                ),
+              )
+            else
+              Icon(Icons.error_outline, color: foreground),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(
+                  color: foreground,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (!isLoading && onDismiss != null)
+              IconButton(
+                onPressed: onDismiss,
+                icon: Icon(Icons.close, color: foreground),
+                tooltip: 'Dismiss',
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RouteInfoCard extends StatelessWidget {
+  const _RouteInfoCard({required this.route, required this.isLoading});
+
+  final nav.Route route;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final distanceText = '${route.distanceKm.toStringAsFixed(1)} km';
+    final durationText = _formatDuration(route.durationMin);
+
+    return Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(16),
+      color: theme.colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: Row(
+          children: [
+            Icon(Icons.alt_route, color: theme.colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Driving route',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$distanceText • $durationText',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ],
+              ),
+            ),
+            if (isLoading)
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    theme.colorScheme.primary,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatDuration(int minutes) {
+    if (minutes < 60) {
+      return '$minutes min';
+    }
+    final hours = minutes ~/ 60;
+    final remaining = minutes % 60;
+    if (remaining == 0) {
+      return hours == 1 ? '1 hr' : '$hours hrs';
+    }
+    return '$hours hr ${remaining} min';
   }
 }
 

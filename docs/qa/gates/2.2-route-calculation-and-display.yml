@@ -1,0 +1,49 @@
+# <!-- Powered by BMAD™ Core -->
+schema: 1
+story: "2.2"
+story_title: "Story 2.2: Route Calculation and Display"
+gate: PASS
+status_reason: "GraphHopper fallback now runs within the 5-second SLA and widget tests are fully stubbed."
+reviewer: "Quinn (Test Architect)"
+updated: "2025-11-12T00:00:00Z"
+
+waiver: { active: false }
+
+top_issues: []
+
+risk_summary:
+  totals: { critical: 0, high: 0, medium: 0, low: 0 }
+  recommendations:
+    must_fix: []
+    monitor: []
+
+quality_score: 100
+expires: "2025-11-26T00:00:00Z"
+
+evidence:
+  tests_reviewed: 32
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "HTTPS enforced for OSRM and GraphHopper requests."
+  performance:
+    status: PASS
+    notes: "Timeout split guarantees fallback execution within the 5-second SLA."
+  reliability:
+    status: PASS
+    notes: "Fallback verified via regression coverage."
+  maintainability:
+    status: PASS
+    notes: "Widget tests run against stubbed tile provider."
+
+recommendations:
+  immediate: []
+  future:
+    - action: "Document rollout expectations for GRAPHHOPPER_API_KEY and capture live performance telemetry."
+      refs:
+        - "docs/stories/2.2.story.md"

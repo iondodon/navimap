@@ -5,20 +5,30 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../models/destination.dart';
+import '../models/route.dart';
 import '../models/user_location.dart';
 import '../services/location_service.dart';
+import '../services/routing_service.dart';
 
 class AppState extends ChangeNotifier {
-  AppState({http.Client? httpClient, LocationService? locationService})
-      : _httpClient = httpClient ?? http.Client(),
+  AppState({
+    http.Client? httpClient,
+    LocationService? locationService,
+    RoutingService? routingService,
+  })  : _httpClient = httpClient ?? http.Client(),
         _ownsHttpClient = httpClient == null,
-        _locationService = locationService ?? LocationService() {
+        _locationService = locationService ?? LocationService(),
+        _routingService = routingService ??
+            RoutingService(httpClient: httpClient ?? http.Client()),
+        _ownsRoutingService = routingService == null {
     _beginConnectivityProbe();
   }
 
   final http.Client _httpClient;
   final bool _ownsHttpClient;
   final LocationService _locationService;
+  final RoutingService _routingService;
+  final bool _ownsRoutingService;
   StreamSubscription<UserLocation>? _locationSubscription;
 
   static const LatLng defaultCenter = LatLng(37.7749, -122.4194);
@@ -47,6 +57,10 @@ class AppState extends ChangeNotifier {
   Destination? _currentDestination;
   bool _isDestinationUpdating = false;
   String? _destinationError;
+  Route? _currentRoute;
+  bool _isCalculatingRoute = false;
+  String? _routeError;
+  int _routeRequestId = 0;
 
   LatLng get center => _center;
   double get zoom => _zoom;
@@ -72,6 +86,10 @@ class AppState extends ChangeNotifier {
   bool get hasDestination => _currentDestination != null;
   bool get isDestinationUpdating => _isDestinationUpdating;
   String? get destinationError => _destinationError;
+  Route? get currentRoute => _currentRoute;
+  bool get hasRoute => _currentRoute != null;
+  bool get isCalculatingRoute => _isCalculatingRoute;
+  String? get routeError => _routeError;
 
   Future<void> retryConnectivityCheck() {
     _retryToken++;
@@ -230,6 +248,7 @@ class AppState extends ChangeNotifier {
     _startDestinationUpdate();
     _currentDestination = destination;
     _finalizeDestinationUpdate();
+    _calculateRouteForDestination(clearExistingRoute: true);
   }
 
   void clearDestination() {
@@ -239,6 +258,7 @@ class AppState extends ChangeNotifier {
     _startDestinationUpdate();
     _currentDestination = null;
     _finalizeDestinationUpdate();
+    clearRoute();
   }
 
   void setDestinationError(String message) {
@@ -254,10 +274,46 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setRoute(Route route) {
+    _currentRoute = route;
+    _routeError = null;
+    _isCalculatingRoute = false;
+    notifyListeners();
+  }
+
+  void clearRoute({bool notify = true}) {
+    final hadState =
+        _currentRoute != null || _routeError != null || _isCalculatingRoute;
+    _currentRoute = null;
+    _routeError = null;
+    _isCalculatingRoute = false;
+    _routeRequestId++;
+    if (notify && hadState) {
+      notifyListeners();
+    }
+  }
+
+  void setRouteError(String message) {
+    _routeError = message;
+    _isCalculatingRoute = false;
+    notifyListeners();
+  }
+
+  void clearRouteError() {
+    if (_routeError == null) {
+      return;
+    }
+    _routeError = null;
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     if (_ownsHttpClient) {
       _httpClient.close();
+    }
+    if (_ownsRoutingService) {
+      _routingService.dispose();
     }
     _locationSubscription?.cancel();
     super.dispose();
@@ -267,7 +323,8 @@ class AppState extends ChangeNotifier {
     final enabled = await _locationService.isLocationServiceEnabled();
     _isLocationServiceEnabled = enabled;
     if (!enabled) {
-      _locationError = 'Location services are disabled. Enable GPS to view your position.';
+      _locationError =
+          'Location services are disabled. Enable GPS to view your position.';
     }
   }
 
@@ -305,7 +362,8 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  void _handleLocationUpdate(UserLocation location, {bool shouldCenter = false, bool notify = true}) {
+  void _handleLocationUpdate(UserLocation location,
+      {bool shouldCenter = false, bool notify = true}) {
     final isFirstUpdate = _currentLocation == null;
     _currentLocation = location;
     _locationError = null;
@@ -317,6 +375,9 @@ class AppState extends ChangeNotifier {
     if (notify) {
       notifyListeners();
     }
+    if (_currentDestination != null && !_isCalculatingRoute && !hasRoute) {
+      _calculateRouteForDestination();
+    }
   }
 
   void _applyPermissionStatus(LocationPermissionStatus status) {
@@ -324,25 +385,31 @@ class AppState extends ChangeNotifier {
     _permissionDeniedForever = status == LocationPermissionStatus.deniedForever;
   }
 
-  void _applyLocationError(LocationServiceException error, {bool notify = false}) {
+  void _applyLocationError(LocationServiceException error,
+      {bool notify = false}) {
     switch (error.code) {
       case LocationServiceErrorCode.permissionDenied:
         _hasLocationPermission = false;
-        _locationError = 'Location permission denied. Enable access to see your position.';
+        _locationError =
+            'Location permission denied. Enable access to see your position.';
         break;
       case LocationServiceErrorCode.permissionPermanentlyDenied:
         _permissionDeniedForever = true;
-        _locationError = 'Location permissions permanently denied. Update settings to continue.';
+        _locationError =
+            'Location permissions permanently denied. Update settings to continue.';
         break;
       case LocationServiceErrorCode.serviceDisabled:
-        _locationError = 'Location services are disabled. Turn on GPS and try again.';
+        _locationError =
+            'Location services are disabled. Turn on GPS and try again.';
         _isLocationServiceEnabled = false;
         break;
       case LocationServiceErrorCode.timeout:
-        _locationError = 'Fetching your location is taking longer than expected. Please try again.';
+        _locationError =
+            'Fetching your location is taking longer than expected. Please try again.';
         break;
       case LocationServiceErrorCode.unknown:
-        _locationError = 'We ran into a problem retrieving your location. Retry in a moment.';
+        _locationError =
+            'We ran into a problem retrieving your location. Retry in a moment.';
         break;
     }
     if (notify) {
@@ -359,5 +426,62 @@ class AppState extends ChangeNotifier {
   void _finalizeDestinationUpdate() {
     _isDestinationUpdating = false;
     notifyListeners();
+  }
+
+  void _calculateRouteForDestination({bool clearExistingRoute = false}) {
+    final destination = _currentDestination;
+    if (destination == null) {
+      return;
+    }
+
+    final requestId =
+        _prepareRouteRequest(clearExistingRoute: clearExistingRoute);
+    final location = _currentLocation;
+
+    if (location == null) {
+      _routeError =
+          'Current location unavailable. Enable location services and try again.';
+      _isCalculatingRoute = false;
+      notifyListeners();
+      return;
+    }
+
+    _isCalculatingRoute = true;
+    notifyListeners();
+
+    _routingService.calculateRoute(location, destination).then((route) {
+      if (_routeRequestId != requestId) {
+        return;
+      }
+      setRoute(route);
+    }).catchError((error) {
+      if (_routeRequestId != requestId) {
+        return;
+      }
+      final message = error is RoutingException
+          ? error.message
+          : 'Route calculation failed. Please try again.';
+      setRouteError(message);
+    });
+  }
+
+  int _prepareRouteRequest({required bool clearExistingRoute}) {
+    if (clearExistingRoute) {
+      final hadState =
+          _currentRoute != null || _routeError != null || _isCalculatingRoute;
+      _currentRoute = null;
+      _routeError = null;
+      _isCalculatingRoute = false;
+      _routeRequestId++;
+      if (hadState) {
+        notifyListeners();
+      }
+      return _routeRequestId;
+    }
+
+    _routeError = null;
+    _isCalculatingRoute = false;
+    _routeRequestId++;
+    return _routeRequestId;
   }
 }
