@@ -1,0 +1,62 @@
+schema: 1
+story: "2.1"
+story_title: "Destination Selection by Map Tap"
+gate: CONCERNS
+status_reason: "Tap responsiveness remains unmeasured and zoom/animation behaviours still rely on manual checks despite core tap automation."
+reviewer: "Quinn (Test Architect)"
+updated: "2025-11-12T16:10:00Z"
+
+waiver:
+  active: false
+
+top_issues:
+  - id: tap-latency-metrics
+    title: "Tap responsiveness target (100 ms) is unmeasured"
+    severity: medium
+    suggested_owner: dev
+    notes: "Instrument tap handling or capture profiler traces to demonstrate compliance with AC5."
+  - id: tap-zoom-coverage
+    title: "Marker/animation behaviour across zoom levels remains unverified"
+    severity: medium
+    suggested_owner: dev
+    notes: "Extend automated coverage to assert marker placement stability across zoom levels and ripple animation triggering."
+
+risk_summary:
+  highest_score: 0
+  items: []
+
+quality_score: 80
+expires: "2025-11-26T15:35:00Z"
+
+evidence:
+  tests_reviewed: 8
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3, 4]
+    ac_gaps: [5, 6, 7]
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "Destination data remains local; no new surface area introduced."
+  performance:
+    status: CONCERNS
+    notes: "No metrics collected to prove the 100 ms tap feedback requirement."
+  reliability:
+    status: CONCERNS
+    notes: "Tap workflow covered, but zoom-level behaviour and ripple feedback still rely on manual validation."
+  maintainability:
+    status: PASS
+    notes: "State management and widget composition remain clean and testable."
+
+recommendations:
+  immediate:
+    - action: "Capture tap feedback latency metrics and document compliance with AC5."
+      refs:
+        - "docs/stories/2.1.story.md"
+        - "lib/screens/map_screen.dart"
+  future:
+    - action: "Extend coverage to assert marker placement across zoom levels and ripple animation triggering."
+      refs:
+        - "test/screens/map_screen_test.dart"
+        - "docs/architecture/testing-strategy.md"

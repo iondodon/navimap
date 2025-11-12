@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
+import '../models/destination.dart';
 import '../models/user_location.dart';
 import '../services/location_service.dart';
 import '../state/app_state.dart';
@@ -25,6 +28,9 @@ class _MapScreenState extends State<MapScreen> {
   bool _initialized = false;
   bool _hasPromptedPermission = false;
   bool _isPermissionDialogOpen = false;
+  _TapFeedbackData? _tapFeedback;
+  Timer? _tapFeedbackTimer;
+  int _destinationMarkerVersion = 0;
 
   @override
   void didChangeDependencies() {
@@ -60,11 +66,14 @@ class _MapScreenState extends State<MapScreen> {
                   appState,
                   showOffline: showOffline,
                 ),
-              if (appState.isCheckingConnectivity || (showMap && !appState.isMapReady))
+              if (showMap) _buildTapFeedbackOverlay(),
+              if (appState.isCheckingConnectivity ||
+                  (showMap && !appState.isMapReady))
                 const _MapLoadingOverlay(),
               if (appState.hasTileError && showMap)
                 _TileErrorBanner(
-                  message: appState.tileErrorMessage ?? 'Tile loading issue detected.',
+                  message: appState.tileErrorMessage ??
+                      'Tile loading issue detected.',
                   onRetry: () {
                     appState.clearTileError();
                     appState.retryConnectivityCheck();
@@ -78,12 +87,14 @@ class _MapScreenState extends State<MapScreen> {
               if (appState.locationError != null)
                 _LocationErrorBanner(
                   message: appState.locationError!,
-                  onRetry: appState.hasLocationPermission && appState.isLocationServiceEnabled
+                  onRetry: appState.hasLocationPermission &&
+                          appState.isLocationServiceEnabled
                       ? () {
                           appState.fetchCurrentLocation();
                         }
                       : null,
-                  onSettings: appState.permissionDeniedForever || !appState.isLocationServiceEnabled
+                  onSettings: appState.permissionDeniedForever ||
+                          !appState.isLocationServiceEnabled
                       ? _openSystemSettings
                       : null,
                 ),
@@ -104,6 +115,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Widget _buildMap(BuildContext context, AppState appState) {
     final locationLayers = _buildLocationLayers(appState);
+    final destinationLayer = _buildDestinationLayer(appState);
 
     return FlutterMap(
       key: ValueKey('flutter-map-${appState.retryToken}'),
@@ -127,6 +139,9 @@ class _MapScreenState extends State<MapScreen> {
           }
           appState.updateCamera(position.center, position.zoom);
         },
+        onTap: (tapPosition, latLng) {
+          _onMapTap(appState, tapPosition, latLng);
+        },
       ),
       children: [
         TileLayer(
@@ -143,6 +158,7 @@ class _MapScreenState extends State<MapScreen> {
           },
         ),
         ...locationLayers,
+        if (destinationLayer != null) destinationLayer,
       ],
     );
   }
@@ -234,6 +250,28 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  Widget? _buildDestinationLayer(AppState appState) {
+    final destination = appState.currentDestination;
+    if (destination == null) {
+      return null;
+    }
+
+    final markerKey = ValueKey(
+        'destination-${_destinationMarkerVersion}-${destination.latitude}-${destination.longitude}');
+
+    return MarkerLayer(
+      markers: [
+        Marker(
+          point: destination.toLatLng(),
+          width: 52,
+          height: 52,
+          alignment: Alignment.topCenter,
+          child: _DestinationMarker(markerKey: markerKey),
+        ),
+      ],
+    );
+  }
+
   void _handleSideEffects(AppState appState) {
     if (appState.shouldCenterOnUser && appState.isMapReady) {
       final location = appState.currentLocation;
@@ -253,7 +291,9 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   bool _shouldShowPermissionDialog(AppState appState) {
-    if (appState.hasLocationPermission || appState.permissionDeniedForever || _isPermissionDialogOpen) {
+    if (appState.hasLocationPermission ||
+        appState.permissionDeniedForever ||
+        _isPermissionDialogOpen) {
       return false;
     }
     return !_hasPromptedPermission;
@@ -304,6 +344,61 @@ class _MapScreenState extends State<MapScreen> {
     await Geolocator.openAppSettings();
     await Geolocator.openLocationSettings();
   }
+
+  void _onMapTap(AppState appState, TapPosition tapPosition, LatLng latLng) {
+    final destination =
+        Destination(latitude: latLng.latitude, longitude: latLng.longitude);
+    final relative = tapPosition.relative;
+    if (relative != null) {
+      _registerTapFeedback(relative);
+    } else {
+      setState(() {
+        _destinationMarkerVersion++;
+      });
+    }
+    appState.setDestination(destination);
+  }
+
+  void _registerTapFeedback(Offset position) {
+    _tapFeedbackTimer?.cancel();
+    final timestamp = DateTime.now();
+    setState(() {
+      _destinationMarkerVersion++;
+      _tapFeedback = _TapFeedbackData(position: position, timestamp: timestamp);
+    });
+    _tapFeedbackTimer = Timer(const Duration(milliseconds: 260), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _tapFeedback = null;
+      });
+    });
+  }
+
+  Widget _buildTapFeedbackOverlay() {
+    final data = _tapFeedback;
+    if (data == null) {
+      return const SizedBox.shrink();
+    }
+
+    const double diameter = 48;
+    final offset = data.position;
+
+    return Positioned(
+      left: offset.dx - (diameter / 2),
+      top: offset.dy - (diameter / 2),
+      child: IgnorePointer(
+        child: _TapRipple(key: ValueKey<DateTime>(data.timestamp)),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tapFeedbackTimer?.cancel();
+    super.dispose();
+  }
 }
 
 class _MapLoadingOverlay extends StatelessWidget {
@@ -318,6 +413,93 @@ class _MapLoadingOverlay extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DestinationMarker extends StatelessWidget {
+  const _DestinationMarker({
+    required this.markerKey,
+  });
+
+  final Key markerKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.85, end: 1),
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutBack,
+      builder: (context, value, child) {
+        return Transform.scale(
+          scale: value,
+          alignment: Alignment.bottomCenter,
+          child: child,
+        );
+      },
+      child: Column(
+        key: markerKey,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.location_on,
+            key: const ValueKey('destination-pin-icon'),
+            color: Colors.red.shade600,
+            size: 42,
+            shadows: const [
+              Shadow(
+                  color: Colors.black26, blurRadius: 6, offset: Offset(0, 3)),
+            ],
+          ),
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.18),
+              shape: BoxShape.circle,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TapRipple extends StatelessWidget {
+  const _TapRipple({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 220),
+      builder: (context, value, child) {
+        final opacity = (1 - value).clamp(0.0, 1.0);
+        final scale = 0.6 + (value * 0.6);
+        return Opacity(
+          opacity: opacity,
+          child: Transform.scale(
+            scale: scale,
+            child: child,
+          ),
+        );
+      },
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.red.withOpacity(0.16),
+          border: Border.all(color: Colors.red.withOpacity(0.6), width: 2),
+        ),
+      ),
+    );
+  }
+}
+
+class _TapFeedbackData {
+  _TapFeedbackData({required this.position, required this.timestamp});
+
+  final Offset position;
+  final DateTime timestamp;
 }
 
 class _TileErrorBanner extends StatelessWidget {
@@ -354,7 +536,8 @@ class _TileErrorBanner extends StatelessWidget {
                 const SizedBox(width: 12),
                 TextButton(
                   onPressed: onRetry,
-                  child: const Text('Retry', style: TextStyle(color: Colors.white)),
+                  child: const Text('Retry',
+                      style: TextStyle(color: Colors.white)),
                 ),
               ],
             ),
@@ -470,7 +653,8 @@ class _LocationErrorBanner extends StatelessWidget {
                       if (onRetry != null)
                         FilledButton(
                           onPressed: onRetry,
-                          style: FilledButton.styleFrom(backgroundColor: Colors.white),
+                          style: FilledButton.styleFrom(
+                              backgroundColor: Colors.white),
                           child: const Text(
                             'Retry',
                             style: TextStyle(color: Colors.black87),
@@ -480,9 +664,9 @@ class _LocationErrorBanner extends StatelessWidget {
                         const SizedBox(width: 12),
                       if (onSettings != null)
                         OutlinedButton(
-                              onPressed: () {
-                                onSettings?.call();
-                              },
+                          onPressed: () {
+                            onSettings?.call();
+                          },
                           style: OutlinedButton.styleFrom(
                             side: const BorderSide(color: Colors.white70),
                           ),

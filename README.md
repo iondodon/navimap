@@ -2,6 +2,8 @@
 
 A simple open-source navigation app using OpenStreetMap and Flutter.
 
+This project uses [BMad-Method](https://github.com/bmad-code-org/BMAD-METHOD)
+
 ## Overview
 
 NaviMap is a cross-platform mobile navigation application built with Flutter, using OpenStreetMap for map data and OSRM/GraphHopper for routing services.

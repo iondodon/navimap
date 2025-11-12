@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import '../models/destination.dart';
 import '../models/user_location.dart';
 import '../services/location_service.dart';
 
@@ -43,6 +44,9 @@ class AppState extends ChangeNotifier {
   String? _locationError;
   bool _shouldCenterOnUser = false;
   bool _hasCenteredOnUser = false;
+  Destination? _currentDestination;
+  bool _isDestinationUpdating = false;
+  String? _destinationError;
 
   LatLng get center => _center;
   double get zoom => _zoom;
@@ -64,6 +68,10 @@ class AppState extends ChangeNotifier {
   bool get isLocationServiceEnabled => _isLocationServiceEnabled;
   String? get locationError => _locationError;
   bool get shouldCenterOnUser => _shouldCenterOnUser;
+  Destination? get currentDestination => _currentDestination;
+  bool get hasDestination => _currentDestination != null;
+  bool get isDestinationUpdating => _isDestinationUpdating;
+  String? get destinationError => _destinationError;
 
   Future<void> retryConnectivityCheck() {
     _retryToken++;
@@ -218,6 +226,34 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setDestination(Destination destination) {
+    _startDestinationUpdate();
+    _currentDestination = destination;
+    _finalizeDestinationUpdate();
+  }
+
+  void clearDestination() {
+    if (_currentDestination == null && _destinationError == null) {
+      return;
+    }
+    _startDestinationUpdate();
+    _currentDestination = null;
+    _finalizeDestinationUpdate();
+  }
+
+  void setDestinationError(String message) {
+    _destinationError = message;
+    notifyListeners();
+  }
+
+  void clearDestinationError() {
+    if (_destinationError == null) {
+      return;
+    }
+    _destinationError = null;
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     if (_ownsHttpClient) {
@@ -312,5 +348,16 @@ class AppState extends ChangeNotifier {
     if (notify) {
       notifyListeners();
     }
+  }
+
+  void _startDestinationUpdate() {
+    _isDestinationUpdating = true;
+    _destinationError = null;
+    notifyListeners();
+  }
+
+  void _finalizeDestinationUpdate() {
+    _isDestinationUpdating = false;
+    notifyListeners();
   }
 }

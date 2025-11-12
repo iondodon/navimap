@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_platform_interface/geolocator_platform_interface.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:navimap/models/destination.dart';
 import 'package:navimap/models/user_location.dart';
 import 'package:navimap/services/location_service.dart';
 import 'package:navimap/state/app_state.dart';
@@ -121,6 +122,56 @@ void main() {
     expect(state.locationError, contains('Location services are disabled'));
 
     await _waitForConnectivity(state);
+    state.dispose();
+  });
+
+  test('setDestination stores destination and toggles loading state', () async {
+    final state = AppState(
+      httpClient: httpClient,
+      locationService: locationService,
+    );
+
+    // Drain connectivity probe to avoid pending timers.
+    await _waitForConnectivity(state);
+
+    final destination = Destination(latitude: 37.0, longitude: -122.0);
+
+    final updates = <bool>[];
+    final listener = () => updates.add(state.isDestinationUpdating);
+    state.addListener(listener);
+
+    state.setDestination(destination);
+
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    expect(state.currentDestination, destination);
+    expect(state.destinationError, isNull);
+    expect(state.hasDestination, isTrue);
+    expect(updates, containsAllInOrder([true, false]));
+
+    state.removeListener(listener);
+    state.dispose();
+  });
+
+  test('clearDestination removes destination without error', () async {
+    final state = AppState(
+      httpClient: httpClient,
+      locationService: locationService,
+    );
+
+    await _waitForConnectivity(state);
+
+    state.setDestination(Destination(latitude: 10, longitude: 20));
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    expect(state.currentDestination, isNotNull);
+
+    state.clearDestination();
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    expect(state.currentDestination, isNull);
+    expect(state.hasDestination, isFalse);
+
     state.dispose();
   });
 }
